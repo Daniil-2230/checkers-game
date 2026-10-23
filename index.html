@@ -24,10 +24,18 @@
     height: 100vh;
     height: 100dvh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     padding: 0;
     margin: 0;
+  }
+  #status {
+    color: #ddd;
+    font-size: 14px;
+    padding: 4px 8px;
+    min-height: 20px;
+    text-align: center;
   }
   #board {
     width: 100vw;
@@ -43,6 +51,7 @@
     box-shadow: 0 0 20px rgba(0,0,0,0.6);
     overflow: hidden;
     margin: 0 auto;
+    position: relative;
   }
   .cell {
     position: relative;
@@ -58,12 +67,46 @@
   .cell.dark {
     background: #5a3a22;
   }
+  .cell.hint-move::before {
+    content: "";
+    position: absolute;
+    width: 32%;
+    height: 32%;
+    border-radius: 50%;
+    background: rgba(40, 200, 80, 0.75);
+    box-shadow: 0 0 8px rgba(40, 200, 80, 0.7);
+    pointer-events: none;
+  }
+  .cell.hint-capture::before {
+    content: "";
+    position: absolute;
+    width: 40%;
+    height: 40%;
+    border-radius: 50%;
+    background: rgba(230, 50, 50, 0.8);
+    box-shadow: 0 0 10px rgba(230, 50, 50, 0.8);
+    pointer-events: none;
+  }
+  .cell.hint-path::before {
+    content: "";
+    position: absolute;
+    width: 24%;
+    height: 24%;
+    border-radius: 50%;
+    background: rgba(40, 200, 80, 0.4);
+    border: 2px dashed rgba(40, 200, 80, 0.7);
+    pointer-events: none;
+  }
+  .cell.selected .piece {
+    box-shadow: 0 0 0 3px #ffd54a, 0 2px 4px rgba(0,0,0,0.5);
+  }
   .piece {
     width: 78%;
     height: 78%;
     border-radius: 50%;
     box-shadow: 0 2px 4px rgba(0,0,0,0.5), inset 0 -2px 3px rgba(0,0,0,0.2);
     position: relative;
+    z-index: 2;
   }
   .piece.white {
     background: radial-gradient(circle at 35% 30%, #ffffff, #e0e0e0 70%, #bdbdbd);
@@ -95,6 +138,7 @@
 </head>
 <body>
 <div id="app">
+  <div id="status"></div>
   <div id="board"></div>
 </div>
 <script>
@@ -120,25 +164,187 @@
       }
     }
 
-    // Чёрные (компьютер) — верхние 3 ряда (0,1,2), на тёмных клетках
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 8; c++) {
-        if ((r + c) % 2 === 1) {
-          board[r][c] = BLACK;
-        }
+        if ((r + c) % 2 === 1) board[r][c] = BLACK;
       }
     }
-
-    // Белые (игрок) — нижние 3 ряда (5,6,7), на тёмных клетках
     for (let r = 5; r < 8; r++) {
       for (let c = 0; c < 8; c++) {
-        if ((r + c) % 2 === 1) {
-          board[r][c] = WHITE;
-        }
+        if ((r + c) % 2 === 1) board[r][c] = WHITE;
       }
     }
 
     const boardEl = document.getElementById('board');
+    const statusEl = document.getElementById('status');
+
+    const state = {
+      turn: WHITE,
+      selected: null,          // {r, c}
+      legalMoves: [],          // [{r,c,type:'move'|'capture', path:[...]}]
+      chainFrom: null,         // {r,c} — при продолжении серии
+      chainCaptures: [],       // захваченные в текущей серии
+      gameOver: false,
+      busy: false              // блокировка во время хода ИИ
+    };
+
+    function isWhite(v) { return v === WHITE || v === WHITE_KING; }
+    function isBlack(v) { return v === BLACK || v === BLACK_KING; }
+    function isKing(v) { return v === WHITE_KING || v === BLACK_KING; }
+    function inBoard(r, c) { return r >= 0 && r < 8 && c >= 0 && c < 8; }
+
+    // ---------- Логика правил ----------
+
+    // Простые шашки: направления (dr для белых = -1, для чёрных = +1)
+    // В русских шашках простые могут бить в любом направлении (и назад тоже).
+    const DIRS = [[-1,-1],[-1,1],[1,-1],[1,1]];
+
+    // Возвращает массив ходов для конкретной шашки без учёта обязательного боя.
+    // move: {r,c,type:'move'} ; capture: {r,c,type:'capture',captured:[{r,c}...],path:[{r,c}...]}
+    // Для простых серия считается рекурсивно (все варианты).
+    function pieceMoves(r, c, val, chainCapturedSet) {
+      const moves = [];
+      const captures = [];
+      const isW = isWhite(val);
+      const king = isKing(val);
+
+      if (king) {
+        // Дамка: скользящие ходы по диагонали
+        for (const [dr, dc] of DIRS) {
+          let rr = r + dr, cc = c + dc;
+          while (inBoard(rr, cc) && board[rr][cc] === EMPTY) {
+            moves.push({ r: rr, c: cc, type: 'move' });
+            rr += dr; cc += dc;
+          }
+          // Взятие дамкой: ищем первую фигуру, за ней свободные клетки
+          let br = r + dr, bc = c + dc;
+          while (inBoard(br, bc) && board[br][bc] === EMPTY) { br += dr; bc += dc; }
+          if (inBoard(br, bc)) {
+            const target = board[br][bc];
+            const targetIsEnemy = isW ? isBlack(target) : isWhite(target);
+            if (targetIsEnemy) {
+              let lr = br + dr, lc = bc + dc;
+              while (inBoard(lr, lc) && board[lr][lc] === EMPTY) {
+                captures.push({
+                  r: lr, c: lc, type: 'capture',
+                  captured: [{ r: br, c: bc }],
+                  path: [{ r: lr, c: lc }]
+                });
+                lr += dr; lc += dc;
+              }
+            }
+          }
+        }
+      } else {
+        // Простая шашка: ходы только вперёд
+        const fwd = isW ? -1 : 1;
+        for (const dc of [-1, 1]) {
+          const rr = r + fwd, cc = c + dc;
+          if (inBoard(rr, cc) && board[rr][cc] === EMPTY) {
+            moves.push({ r: rr, c: cc, type: 'move' });
+          }
+        }
+        // Взятие: по всем 4 направлениям, через одну клетку
+        for (const [dr, dc] of DIRS) {
+          const mr = r + dr, mc = c + dc;
+          const lr = r + 2 * dr, lc = c + 2 * dc;
+          if (inBoard(lr, lc) && board[lr][lc] === EMPTY) {
+            const target = board[mr][mc];
+            const targetIsEnemy = isW ? isBlack(target) : isWhite(target);
+            if (targetIsEnemy) {
+              captures.push({
+                r: lr, c: lc, type: 'capture',
+                captured: [{ r: mr, c: mc }],
+                path: [{ r: lr, c: lc }]
+              });
+            }
+          }
+        }
+      }
+
+      // Для простых шашек — рекурсивное продолжение серии
+      if (!king) {
+        const result = [];
+        for (const cap of captures) {
+          // Временно применяем на копии доски
+          const capturedVals = [board[cap.captured[0].r][cap.captured[0].c]];
+          const startVal = board[r][c];
+          // Симуляция
+          const savedFrom = board[r][c];
+          const savedTarget = board[cap.captured[0].r][cap.captured[0].c];
+          board[r][c] = EMPTY;
+          board[cap.captured[0].r][cap.captured[0].c] = EMPTY;
+          // Превращение в дамку при достижении последнего ряда
+          let newVal = startVal;
+          if (isW && cap.r === 0) newVal = WHITE_KING;
+          if (!isW && cap.r === 7) newVal = BLACK_KING;
+          board[cap.r][cap.c] = newVal;
+
+          let further = [];
+          if (newVal === startVal) {
+            // Ещё простая — ищем продолжение
+            further = pieceMoves(cap.r, cap.c, newVal, null).filter(m => m.type === 'capture');
+          }
+
+          // Восстанавливаем
+          board[r][c] = savedFrom;
+          board[cap.captured[0].r][cap.captured[0].c] = savedTarget;
+          board[cap.r][cap.c] = EMPTY;
+
+          if (further.length === 0) {
+            result.push(cap);
+          } else {
+            for (const f of further) {
+              result.push({
+                r: f.r, c: f.c, type: 'capture',
+                captured: cap.captured.concat(f.captured),
+                path: cap.path.concat(f.path)
+              });
+            }
+          }
+        }
+        return { moves, captures: result };
+      }
+
+      return { moves, captures };
+    }
+
+    // Все ходы для стороны
+    function allSideMoves(side) {
+      const moves = [];
+      const captures = [];
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const v = board[r][c];
+          if (v === EMPTY) continue;
+          if (side === WHITE && !isWhite(v)) continue;
+          if (side === BLACK && !isBlack(v)) continue;
+          const res = pieceMoves(r, c, v, null);
+          for (const m of res.moves) moves.push({ from: { r, c }, ...m });
+          for (const m of res.captures) captures.push({ from: { r, c }, ...m });
+        }
+      }
+      return { moves, captures };
+    }
+
+    // Ходы для конкретной шашки с учётом обязательного боя
+    function legalMovesFor(r, c) {
+      const v = board[r][c];
+      if (v === EMPTY) return [];
+      const side = isWhite(v) ? WHITE : BLACK;
+      if (side !== state.turn) return [];
+
+      const all = allSideMoves(side);
+      const mustCapture = all.captures.length > 0;
+
+      const res = pieceMoves(r, c, v, null);
+      if (mustCapture) {
+        return res.captures;
+      }
+      return res.moves;
+    }
+
+    // ---------- Отрисовка ----------
 
     function createCell(r, c) {
       const cell = document.createElement('div');
@@ -164,13 +370,227 @@
       boardEl.innerHTML = '';
       for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
-          boardEl.appendChild(createCell(r, c));
+          const cell = createCell(r, c);
+          if (state.selected && state.selected.r === r && state.selected.c === c) {
+            cell.classList.add('selected');
+          }
+          if (!state.gameOver && state.turn === WHITE && !state.busy) {
+            for (const m of state.legalMoves) {
+              if (m.r === r && m.c === c) {
+                if (m.type === 'move') cell.classList.add('hint-move');
+                else cell.classList.add('hint-capture');
+                break;
+              }
+            }
+          }
+          boardEl.appendChild(cell);
         }
       }
     }
 
+    // ---------- Обработка кликов ----------
+
+    function clearSelection() {
+      state.selected = null;
+      state.legalMoves = [];
+    }
+
+    function applyMove(from, move) {
+      const v = board[from.r][from.c];
+      const isW = isWhite(v);
+      board[from.r][from.c] = EMPTY;
+
+      if (move.type === 'capture') {
+        for (const cap of move.captured) {
+          board[cap.r][cap.c] = EMPTY;
+        }
+      }
+
+      let newVal = v;
+      if (isW && move.r === 0 && v === WHITE) newVal = WHITE_KING;
+      if (!isW && move.r === 7 && v === BLACK) newVal = BLACK_KING;
+      board[move.r][move.c] = newVal;
+
+      return newVal;
+    }
+
+    function checkWin() {
+      const whiteCount = [];
+      const blackCount = [];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+        if (isWhite(board[r][c])) whiteCount.push([r,c]);
+        if (isBlack(board[r][c])) blackCount.push([r,c]);
+      }
+      if (whiteCount.length === 0) return BLACK;
+      if (blackCount.length === 0) return WHITE;
+
+      const sideMoves = allSideMoves(state.turn);
+      if (sideMoves.moves.length === 0 && sideMoves.captures.length === 0) {
+        return state.turn === WHITE ? BLACK : WHITE;
+      }
+      return null;
+    }
+
+    function endGame(winner) {
+      state.gameOver = true;
+      clearSelection();
+      statusEl.textContent = winner === WHITE ? 'Вы победили! 🎉' : 'Вы проиграли 😢';
+      render();
+    }
+
+    function switchTurn() {
+      state.turn = state.turn === WHITE ? BLACK : WHITE;
+      clearSelection();
+      if (state.turn === BLACK) {
+        state.busy = true;
+        render();
+        setTimeout(aiMove, 400);
+      } else {
+        state.busy = false;
+        statusEl.textContent = 'Ваш ход (белые)';
+        render();
+      }
+    }
+
+    function onCellClick(e) {
+      if (state.gameOver || state.busy || state.turn !== WHITE) return;
+      if (state.chainFrom) {
+        // Серия боя — обрабатываем только клики по клеткам серии
+        const r = +e.currentTarget.dataset.row;
+        const c = +e.currentTarget.dataset.col;
+        const match = state.legalMoves.find(m => m.r === r && m.c === c);
+        if (match) {
+          handlePlayerMove(state.chainFrom, match);
+        }
+        return;
+      }
+
+      const r = +e.currentTarget.dataset.row;
+      const c = +e.currentTarget.dataset.col;
+      const v = board[r][c];
+
+      // Клик по своей шашке — выделить
+      if (v !== EMPTY && isWhite(v) && state.turn === WHITE) {
+        const moves = legalMovesFor(r, c);
+        if (moves.length === 0) {
+          // Нельзя ходить этой шашкой (нет ходов или обязательный бой другой)
+          statusEl.textContent = 'У этой шашки нет допустимых ходов.';
+          clearSelection();
+          render();
+          return;
+        }
+        state.selected = { r, c };
+        state.legalMoves = moves;
+        render();
+        return;
+      }
+
+      // Клик по подсвеченной клетке
+      if (state.selected) {
+        const match = state.legalMoves.find(m => m.r === r && m.c === c);
+        if (match) {
+          handlePlayerMove(state.selected, match);
+          return;
+        }
+      }
+
+      clearSelection();
+      render();
+    }
+
+    function handlePlayerMove(from, move) {
+      const newVal = applyMove(from, move);
+
+      // Проверка продолжения серии боя
+      if (move.type === 'capture' && newVal === WHITE) {
+        const further = pieceMoves(move.r, move.c, newVal, null).filter(m => m.type === 'capture');
+        // Но также нужно пересчитать с учётом того, что дамка могла только что стать дамкой:
+        // pieceMoves уже даёт корректные варианты для нового значения.
+        if (further.length > 0) {
+          state.chainFrom = { r: move.r, c: move.c };
+          state.selected = { r: move.r, c: move.c };
+          state.legalMoves = further;
+          statusEl.textContent = 'Продолжите серию боя!';
+          render();
+          return;
+        }
+      }
+
+      state.chainFrom = null;
+
+      // Проверка победы/ничьей
+      const nextTurn = state.turn === WHITE ? BLACK : WHITE;
+      const temp = state.turn;
+      state.turn = nextTurn;
+      const winner = checkWin();
+      state.turn = temp;
+      if (winner !== null) {
+        endGame(winner);
+        return;
+      }
+
+      switchTurn();
+    }
+
+    // ---------- ИИ (заглушка) ----------
+
+    function aiMove() {
+      if (state.gameOver) return;
+      const all = allSideMoves(BLACK);
+      let candidates;
+      if (all.captures.length > 0) {
+        // Максимизируем число взятий
+        const maxLen = Math.max(...all.captures.map(c => c.captured.length));
+        candidates = all.captures.filter(c => c.captured.length === maxLen);
+      } else if (all.moves.length > 0) {
+        candidates = all.moves;
+      } else {
+        endGame(WHITE);
+        return;
+      }
+
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      let from = pick.from;
+      let move = pick;
+
+      // Если это серия захватов, применим всю сразу (все захваченные)
+      const v = board[from.r][from.c];
+      board[from.r][from.c] = EMPTY;
+      if (move.type === 'capture') {
+        for (const cap of move.captured) board[cap.r][cap.c] = EMPTY;
+      }
+      let newVal = v;
+      if (isBlack(v) && move.r === 7 && v === BLACK) newVal = BLACK_KING;
+      board[move.r][move.c] = newVal;
+
+      const temp = state.turn;
+      state.turn = WHITE;
+      const winner = checkWin();
+      state.turn = temp;
+      if (winner !== null) {
+        endGame(winner);
+        return;
+      }
+
+      state.busy = false;
+      state.turn = WHITE;
+      state.chainFrom = null;
+      clearSelection();
+      statusEl.textContent = 'Ваш ход (белые)';
+      render();
+    }
+
+    // ---------- Инициализация ----------
+
+    boardEl.addEventListener('click', function (e) {
+      const cell = e.target.closest('.cell');
+      if (!cell) return;
+      onCellClick({ currentTarget: cell });
+    });
+
+    statusEl.textContent = 'Ваш ход (белые)';
     render();
   })();
 </script>
 </body>
-</html>
+ </html>
