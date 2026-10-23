@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Русские шашки</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #1e1e1e;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #app {
+    width: 100%;
+    max-width: 100vw;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+  }
+  #board {
+    width: 100%;
+    max-width: 500px;
+    aspect-ratio: 1 / 1;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    border: 4px solid #3a2418;
+    border-radius: 4px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+    overflow: hidden;
+  }
+  .cell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cell.light {
+    background: #f0d9b5;
+  }
+  .cell.dark {
+    background: #5a3a22;
+  }
+  .piece {
+    width: 78%;
+    height: 78%;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.5), inset 0 -2px 3px rgba(0,0,0,0.2);
+    position: relative;
+    transition: none;
+  }
+  .piece.white {
+    background: radial-gradient(circle at 35% 30%, #ffffff, #e0e0e0 70%, #bdbdbd);
+    border: 1px solid #b0b0b0;
+  }
+  .piece.black {
+    background: radial-gradient(circle at 35% 30%, #5a5a5a, #2e2e2e 70%, #1a1a1a);
+    border: 1px solid #111;
+  }
+  .piece.king::after {
+    content: "";
+    position: absolute;
+    width: 30%;
+    height: 30%;
+    border-radius: 50%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle at 35% 30%, #ffd700, #c9a000 70%, #a08000);
+    box-shadow: 0 0 2px rgba(0,0,0,0.4);
+  }
+  .piece.king.white::after {
+    border: 1px solid #c9a000;
+  }
+  .piece.king.black::after {
+    border: 1px solid #8a6d00;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="board"></div>
+</div>
+<script>
+  (function () {
+    if (window.Telegram && window.Telegram.WebApp) {
+      try {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+      } catch (e) { /* ignore */ }
+    }
+
+    const EMPTY = 0;
+    const WHITE = 1;
+    const BLACK = 2;
+    const WHITE_KING = 3;
+    const BLACK_KING = 4;
+
+    const board = [];
+    for (let r = 0; r < 8; r++) {
+      board[r] = [];
+      for (let c = 0; c < 8; c++) {
+        board[r][c] = EMPTY;
+      }
+    }
+
+    // Чёрные (компьютер) — верхние 3 ряда (0,1,2), на тёмных клетках
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 8; c++) {
+        if ((r + c) % 2 === 1) {
+          board[r][c] = BLACK;
+        }
+      }
+    }
+
+    // Белые (игрок) — нижние 3 ряда (5,6,7), на тёмных клетках
+    for (let r = 5; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if ((r + c) % 2 === 1) {
+          board[r][c] = WHITE;
+        }
+      }
+    }
+
+    const boardEl = document.getElementById('board');
+
+    function createCell(r, c) {
+      const cell = document.createElement('div');
+      const isDark = (r + c) % 2 === 1;
+      cell.className = 'cell ' + (isDark ? 'dark' : 'light');
+      cell.dataset.row = r;
+      cell.dataset.col = c;
+
+      const val = board[r][c];
+      if (val === WHITE || val === WHITE_KING) {
+        const piece = document.createElement('div');
+        piece.className = 'piece white' + (val === WHITE_KING ? ' king' : '');
+        cell.appendChild(piece);
+      } else if (val === BLACK || val === BLACK_KING) {
+        const piece = document.createElement('div');
+        piece.className = 'piece black' + (val === BLACK_KING ? ' king' : '');
+        cell.appendChild(piece);
+      }
+      return cell;
+    }
+
+    function render() {
+      boardEl.innerHTML = '';
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          boardEl.appendChild(createCell(r, c));
+        }
+      }
+    }
+
+    render();
+  })();
+</script>
+</body>
+  </html>
